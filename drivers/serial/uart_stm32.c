@@ -156,6 +156,21 @@ uint32_t lpuartdiv_calc(const uint64_t clock_rate, const uint32_t baud_rate)
 #define STM32_ASYNC_STATUS_TIMEOUT (DMA_STATUS_BLOCK + 1)
 #endif
 
+/* The RS485 DE management is now handled based on de_enable and de_pin fields:
+ * - If de_enable is false, no DE control is performed.
+ * - If de_enable is true and de_pin is not specified (port is NULL), the hardware
+ *   method is assumed (HW control via driver enable functions).
+ * - If de_enable is true and de_pin is defined, a software (SW) method is used.
+ */
+
+static void rs485_de_time_expire_callback(struct k_timer *timer)
+{
+	const struct uart_stm32_config *config = k_timer_user_data_get(timer);
+
+	/* SW method: deassert DE signal */
+	gpio_pin_set(config->de_pin.port, config->de_pin.pin, !config->de_invert);
+}
+
 #ifdef CONFIG_PM
 static void uart_stm32_pm_policy_state_lock_get_unconditional(void)
 {
@@ -1061,6 +1076,20 @@ static void uart_stm32_irq_tx_enable(const struct device *dev)
 	unsigned int key;
 #endif
 
+	/* RS485 DE management:
+	 * If DE is enabled, check if de_pin is specified.
+	 * If yes, use SW method: manually set DE pin active.
+	 * If not, assume HW control – no action required.
+	 */
+	if (config->de_enable) {
+		if (config->de_pin.port != NULL) {
+			/* SW method: set DE active */
+			gpio_pin_set(config->de_pin.port, config->de_pin.pin, config->de_invert);
+		} else {
+			/* HW method: hardware manages DE, no action required */
+		}
+	}
+
 #ifdef CONFIG_PM
 	key = irq_lock();
 	data->tx_poll_stream_on = false;
@@ -1077,8 +1106,31 @@ static void uart_stm32_irq_tx_enable(const struct device *dev)
 static void uart_stm32_irq_tx_disable(const struct device *dev)
 {
 	const struct uart_stm32_config *config = dev->config;
-#ifdef CONFIG_PM
 	struct uart_stm32_data *data = dev->data;
+
+	/* RS485 DE management:
+	 * If DE is enabled, check if de_pin is specified.
+	 * If yes, use SW method: if deassertion time is set, start timer to deassert;
+	 * otherwise, immediately deassert.
+	 * If not, assume HW control – no action required.
+	 */
+	if (config->de_enable) {
+		if (config->de_pin.port != NULL) {
+			/* SW method: handle DE deassertion */
+			if (config->de_deassert_time_us) {
+				k_timer_start(&data->rs485_timer,
+					      K_USEC(config->de_deassert_time_us),
+					      K_NO_WAIT);
+			} else {
+				gpio_pin_set(config->de_pin.port, config->de_pin.pin,
+					     !config->de_invert);
+			}
+		} else {
+			/* HW method: no action required, hardware handles DE deassertion */
+		}
+	}
+
+#ifdef CONFIG_PM
 	unsigned int key;
 
 	key = irq_lock();
@@ -1089,9 +1141,6 @@ static void uart_stm32_irq_tx_disable(const struct device *dev)
 #ifdef CONFIG_PM
 	data->tx_int_stream_on = false;
 	uart_stm32_pm_policy_state_lock_put(dev);
-#endif
-
-#ifdef CONFIG_PM
 	irq_unlock(key);
 #endif
 }
@@ -2343,7 +2392,12 @@ static int uart_stm32_registers_configure(const struct device *dev)
 			return -EINVAL;
 		}
 
-		uart_stm32_set_driver_enable(dev, true);
+		/* If hardware DE control is desired, de_pin is not set.
+		 * Otherwise, SW method will be used.
+		 */
+		if (config->de_pin.port == NULL) {
+			uart_stm32_set_driver_enable(dev, true);
+		}
 		LL_USART_SetDEAssertionTime(usart, config->de_assert_time);
 		LL_USART_SetDEDeassertionTime(usart, config->de_deassert_time);
 
@@ -2419,6 +2473,7 @@ static int uart_stm32_registers_configure(const struct device *dev)
 static int uart_stm32_init(const struct device *dev)
 {
 	const struct uart_stm32_config *config = dev->config;
+	struct uart_stm32_data *data = dev->data;
 	int err;
 
 	err = uart_stm32_clocks_enable(dev);
@@ -2435,6 +2490,23 @@ static int uart_stm32_init(const struct device *dev)
 	err = uart_stm32_registers_configure(dev);
 	if (err < 0) {
 		return err;
+	}
+
+	/* Init DE assert timer and pin for RS485 mode.
+	 * RS485 DE management is now based on de_enable and de_pin:
+	 * - If de_enable is true and de_pin is defined, use SW method.
+	 * - If de_enable is true and de_pin is not defined, use HW method.
+	 */
+	if (config->de_enable) {
+		if (config->de_pin.port != NULL) {
+			/* SW method: configure DE pin and initialize timer */
+			gpio_pin_set(config->de_pin.port, config->de_pin.pin,
+						config->de_invert);
+			k_timer_init(&data->rs485_timer, rs485_de_time_expire_callback, NULL);
+			k_timer_user_data_set(&data->rs485_timer, (void *)config);
+		} else {
+			/* HW method: enable hardware DE control */
+		}
 	}
 
 #if defined(CONFIG_PM) || \
@@ -2723,7 +2795,7 @@ static int uart_stm32_pm_action(const struct device *dev, enum pm_device_action 
 		.tx_rx_swap = DT_INST_PROP(index, tx_rx_swap),			\
 		.rx_invert = DT_INST_PROP(index, rx_invert),			\
 		.tx_invert = DT_INST_PROP(index, tx_invert),			\
-		.de_enable = DT_INST_PROP(index, de_enable),			\
+		.de_enable = DT_INST_PROP(index, rs485_enable),			\
 		.de_assert_time = DT_INST_PROP(index, de_assert_time),		\
 		.de_deassert_time = DT_INST_PROP(index, de_deassert_time),	\
 		.de_invert = DT_INST_PROP(index, de_invert),			\
