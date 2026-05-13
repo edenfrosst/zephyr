@@ -277,6 +277,28 @@ uint16_t crc16_itu_t(uint16_t seed, const uint8_t *src, size_t len)
 }
 #endif
 
+#ifdef CONFIG_CRC16_ANSI
+uint16_t crc16_ansi(const uint8_t *src, size_t len)
+{
+	int ret;
+
+	struct crc_ctx ctx = {
+		.type = CRC16_ANSI,
+		.polynomial = CRC16_POLY,
+		.seed = CRC16_ANSI_INIT_VAL,
+		.reversed = CRC_FLAG_REVERSE_OUTPUT | CRC_FLAG_REVERSE_INPUT,
+	};
+
+	ret = crc_operation(crc_dev, &ctx, src, len);
+	if (ret != 0) {
+		LOG_ERR("CRC operation failed: %d", ret);
+		return 0;
+	}
+
+	return ctx.result;
+}
+#endif
+
 #ifdef CONFIG_CRC24_PGP
 uint32_t crc24_pgp_update(uint32_t crc, const uint8_t *data, size_t len)
 {

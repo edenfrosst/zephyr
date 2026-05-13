@@ -263,17 +263,14 @@ uint16_t crc16_itu_t(uint16_t seed, const uint8_t *src, size_t len);
  * @brief Compute the ANSI (or Modbus) variant of CRC-16
  *
  * The ANSI variant of CRC-16 uses 0x8005 (0xA001 reflected) as its polynomial
- * with the initial * value set to 0xffff.
+ * with the initial value set to 0xffff.
  *
  * @param src Input bytes for the computation
  * @param len Length of the input in bytes
  *
  * @return The computed CRC16 value
  */
-static inline uint16_t crc16_ansi(const uint8_t *src, size_t len)
-{
-	return crc16_reflect(0xA001, 0xffff, src, len);
-}
+uint16_t crc16_ansi(const uint8_t *src, size_t len);
 
 /**
  * @brief Generate IEEE conform CRC32 checksum.

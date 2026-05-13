@@ -76,9 +76,8 @@ config CRC_DRIVER_HAS_CRC16_ITU_T
 
 config CRC_DRIVER_HAS_CRC16_ANSI
 	bool
-	depends on CRC_DRIVER_HAS_CRC16_REFLECT
 	help
-	  CRC driver has CRC16 Ansi computation
+	  CRC driver has CRC16 ANSI computation
 
 config CRC_DRIVER_HAS_CRC16_REFLECT
 	bool

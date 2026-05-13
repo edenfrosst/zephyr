@@ -78,7 +78,7 @@ extern "C" {
 #define CRC16_INIT_VAL 0x0
 
 /** CRC16_ANSI initial value */
-#define CRC16_ANSI_INIT_VAL 0x0
+#define CRC16_ANSI_INIT_VAL 0xFFFF
 
 /** CRC16_CCITT initial value */
 #define CRC16_CCITT_INIT_VAL 0x0000

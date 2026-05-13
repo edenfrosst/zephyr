@@ -73,3 +73,8 @@ uint16_t __weak crc16_itu_t(uint16_t seed, const uint8_t *src, size_t len)
 
 	return seed;
 }
+
+uint16_t __weak crc16_ansi(const uint8_t *src, size_t len)
+{
+	return crc16_reflect(CRC16_REFLECT_POLY, 0xffff, src, len);
+}
