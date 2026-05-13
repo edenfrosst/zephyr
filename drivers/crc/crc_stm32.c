@@ -219,11 +219,7 @@ static int crc_stm32_finish(const struct device *dev, struct crc_ctx *ctx)
 	}
 
 	ctx->result = LL_CRC_ReadData32(config->base);
-
-	/* Post-process result as required by some algorithms */
-	if (ctx->type == CRC32_IEEE) {
-		ctx->result ^= 0xFFFFFFFFu;
-	}
+	ctx->result ^= ctx->xor_out;
 
 	crc_stm32_release(dev, ctx);
 

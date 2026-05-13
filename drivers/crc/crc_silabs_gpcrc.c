@@ -24,7 +24,6 @@ struct crc_silabs_config {
 
 struct crc_silabs_data {
 	bool is_crc32;
-	uint32_t xor_out;
 	struct k_sem lock;
 };
 
@@ -68,7 +67,6 @@ static int set_crc_config(const struct device *dev, struct crc_ctx *ctx)
 			return -EINVAL;
 		}
 		ctx->seed &= 0xFFFFU;
-		data->xor_out = 0x0000U;
 		data->is_crc32 = false;
 		break;
 	}
@@ -80,7 +78,6 @@ static int set_crc_config(const struct device *dev, struct crc_ctx *ctx)
 			return -EINVAL;
 		}
 		ctx->seed &= 0xFFFFU;
-		data->xor_out = 0x0000U;
 		data->is_crc32 = false;
 		break;
 	}
@@ -88,7 +85,6 @@ static int set_crc_config(const struct device *dev, struct crc_ctx *ctx)
 		if (ctx->polynomial != CRC32_IEEE_POLY) {
 			return -EINVAL;
 		}
-		data->xor_out = 0xFFFFFFFFU;
 		data->is_crc32 = true;
 		break;
 	}
@@ -217,7 +213,7 @@ static int crc_silabs_update(const struct device *dev, struct crc_ctx *ctx, cons
 		result = sl_hal_gpcrc_read_data_bit_reversed(config->gpcrc);
 	}
 	/* Xor output */
-	result ^= data->xor_out;
+	result ^= ctx->xor_out;
 
 	if (ctx->type != CRC32_IEEE) {
 		ctx->result = (uint16_t)result;

@@ -26,14 +26,6 @@
 extern "C" {
 #endif
 
-/* Initial value expected to be used at the beginning of the crc8_ccitt
- * computation.
- */
-#define CRC8_CCITT_INITIAL_VALUE 0xFF
-#define CRC8_ROHC_INITIAL_VALUE  0xFF
-
-/* Initial value expected to be used at the beginning of the OpenPGP CRC-24 computation. */
-#define CRC24_PGP_INITIAL_VALUE 0x00B704CEU
 /*
  * The CRC-24 value is stored on a 32-bit value, only the 3 least significant bytes
  * are meaningful. Use the following mask to only keep the CRC-24 value.
@@ -97,6 +89,65 @@ extern "C" {
 #define CRC32K_4_2_POLY 0x93A409EBU
 
 /** @} */
+
+/**
+ * @cond INTERNAL_HIDDEN
+ * Internal seed values for CRC algorithms.
+ * These values are used to initialize the CRC calculation.
+ */
+
+/** CRC4 initial value */
+#define CRC4_INIT_VAL 0x0
+
+/** CRC4_TI initial value */
+#define CRC4_TI_INIT_VAL 0x0
+
+/** CRC7_BE initial value */
+#define CRC7_BE_INIT_VAL 0x0
+
+/** CRC8 initial value */
+#define CRC8_INIT_VAL 0x0
+
+/** CRC8_CCITT initial value */
+#define CRC8_CCITT_INIT_VAL 0xFF
+
+/** CRC8_ROHC initial value */
+#define CRC8_ROHC_INIT_VAL 0xFF
+
+/** CRC16 initial value */
+#define CRC16_INIT_VAL 0x0
+
+/** CRC16_ANSI initial value */
+#define CRC16_ANSI_INIT_VAL 0xFFFF
+
+/** CRC16_CCITT initial value */
+#define CRC16_CCITT_INIT_VAL 0x0000
+
+/** CRC16_ITU_T initial value */
+#define CRC16_ITU_T_INIT_VAL 0x0000
+
+/** CRC24_PGP initial value */
+#define CRC24_PGP_INIT_VALUE 0x00B704CEU
+
+/** CRC32_C initial value */
+#define CRC32_C_INIT_VAL 0xFFFFFFFFU
+
+/** CRC32_IEEE initial value */
+#define CRC32_IEEE_INIT_VAL 0xFFFFFFFFU
+
+/** CRC32_K_4_2 initial value */
+#define CRC32_K_4_2_INIT_VAL 0xFFFFFFFFU
+
+/** CRC32_MPEG2 initial value */
+#define CRC32_MPEG2_INIT_VAL 0xFFFFFFFFU
+
+/** CRC32_IEEE final XOR-out value */
+#define CRC32_IEEE_XOR_OUT 0xFFFFFFFFU
+
+/** CRC32_C final XOR-out value */
+#define CRC32C_XOR_OUT 0xFFFFFFFFU
+
+/** @endcond */
 
 /**
  * @brief CRC algorithm enumeration

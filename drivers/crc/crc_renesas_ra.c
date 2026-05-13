@@ -192,10 +192,6 @@ static int crc_renesas_ra_update(const struct device *dev, struct crc_ctx *ctx, 
 			crc_unlock(dev);
 			return -EINVAL;
 		}
-
-		if (ctx->type == CRC32_IEEE) {
-			ctx->result = (crc_result_t)~ctx->result;
-		}
 		break;
 	}
 	}
@@ -213,6 +209,7 @@ static int crc_renesas_ra_finish(const struct device *dev, struct crc_ctx *ctx)
 		return -EINVAL;
 	}
 
+	ctx->result ^= ctx->xor_out;
 	ctx->state = CRC_STATE_IDLE;
 
 	data->flag_crc_updated = false;

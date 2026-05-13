@@ -51,59 +51,6 @@ extern "C" {
 /** @} */
 
 /**
- * @cond INTERNAL_HIDDEN
- * Internally seed values for CRC algorithms are defined.
- * These values are used to initialize the CRC calculation.
- */
-
-/** CRC4 initial value */
-#define CRC4_INIT_VAL 0x0
-
-/** CRC4_TI initial value */
-#define CRC4_TI_INIT_VAL 0x0
-
-/** CRC7_BE initial value */
-#define CRC7_BE_INIT_VAL 0x0
-
-/** CRC8 initial value */
-#define CRC8_INIT_VAL 0x0
-
-/** CRC8_CCITT initial value */
-#define CRC8_CCITT_INIT_VAL 0xFF
-
-/** CRC8_ROHC initial value */
-#define CRC8_ROHC_INIT_VAL 0xFF
-
-/** CRC16 initial value */
-#define CRC16_INIT_VAL 0x0
-
-/** CRC16_ANSI initial value */
-#define CRC16_ANSI_INIT_VAL 0xFFFF
-
-/** CRC16_CCITT initial value */
-#define CRC16_CCITT_INIT_VAL 0x0000
-
-/** CRC16_ITU_T initial value */
-#define CRC16_ITU_T_INIT_VAL 0x0000
-
-/** CRC24_PGP initial value */
-#define CRC24_PGP_INIT_VALUE 0x00B704CEU
-
-/** CRC32_C initial value */
-#define CRC32_C_INIT_VAL 0xFFFFFFFFU
-
-/** CRC32_IEEE initial value */
-#define CRC32_IEEE_INIT_VAL 0xFFFFFFFFU
-
-/** CRC32_K_4_2 initial value */
-#define CRC32_K_4_2_INIT_VAL 0xFFFFFFFFU
-
-/** CRC32_MPEG2 initial value */
-#define CRC32_MPEG2_INIT_VAL 0xFFFFFFFFU
-
-/** @endcond */
-
-/**
  * @brief CRC state enumeration
  */
 
@@ -145,10 +92,12 @@ struct crc_ctx {
 	enum crc_state state;
 	/** CRC input/output reverse flags */
 	uint32_t reversed;
-	/** CRC polynomial */
+	/** CRC polynomial in normal (MSB-first, unreflected) form */
 	crc_poly_t polynomial;
 	/** CRC initial seed value */
 	crc_init_val_t seed;
+	/** Value XORed into the result by the driver in @ref crc_finish; 0 if unused */
+	crc_result_t xor_out;
 	/** CRC result */
 	crc_result_t result;
 };

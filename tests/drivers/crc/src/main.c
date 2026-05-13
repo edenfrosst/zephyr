@@ -220,6 +220,7 @@ ZTEST(crc, test_crc_32_ieee)
 		.polynomial = CRC32_IEEE_POLY,
 		.seed = CRC32_IEEE_INIT_VAL,
 		.reversed = CRC_FLAG_REVERSE_OUTPUT | CRC_FLAG_REVERSE_INPUT,
+		.xor_out = CRC32_IEEE_XOR_OUT,
 	};
 
 	zassert_equal(crc_begin(dev, &ctx), 0);

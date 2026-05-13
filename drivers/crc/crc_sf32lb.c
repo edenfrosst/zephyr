@@ -41,7 +41,6 @@ struct crc_sf32lb_config {
 struct crc_sf32lb_data {
 	struct k_sem lock;
 	uint8_t width;
-	uint32_t xor_out;
 };
 
 static inline uint32_t crc_sf32lb_mask(uint8_t width)
@@ -53,8 +52,7 @@ static inline uint32_t crc_sf32lb_mask(uint8_t width)
 	return BIT_MASK(width);
 }
 
-static int crc_sf32lb_prepare_config(const struct crc_ctx *ctx, uint8_t *polysize, uint8_t *width,
-				     uint32_t *xor_out)
+static int crc_sf32lb_prepare_config(const struct crc_ctx *ctx, uint8_t *polysize, uint8_t *width)
 {
 	switch (ctx->type) {
 	case CRC8:
@@ -68,7 +66,6 @@ static int crc_sf32lb_prepare_config(const struct crc_ctx *ctx, uint8_t *polysiz
 
 		*polysize = CRC_POLYSIZE_8;
 		*width = 8U;
-		*xor_out = 0U;
 		break;
 	case CRC16:
 		__fallthrough;
@@ -83,19 +80,14 @@ static int crc_sf32lb_prepare_config(const struct crc_ctx *ctx, uint8_t *polysiz
 
 		*polysize = CRC_POLYSIZE_16;
 		*width = 16U;
-		*xor_out = 0U;
 		break;
 	case CRC32_IEEE:
-		*polysize = CRC_POLYSIZE_32;
-		*width = 32U;
-		*xor_out = 0xFFFFFFFFU;
-		break;
+		__fallthrough;
 	case CRC32_C:
 		__fallthrough;
 	case CRC32_K_4_2:
 		*polysize = CRC_POLYSIZE_32;
 		*width = 32U;
-		*xor_out = 0U;
 		break;
 	default:
 		return -ENOTSUP;
@@ -111,14 +103,14 @@ static void crc_sf32lb_unlock(const struct device *dev)
 	k_sem_give(&data->lock);
 }
 
-static uint32_t crc_sf32lb_get_result(const struct device *dev)
+static uint32_t crc_sf32lb_get_result(const struct device *dev, uint32_t xor_out)
 {
 	const struct crc_sf32lb_config *config = dev->config;
 	struct crc_sf32lb_data *data = dev->data;
 	uint32_t raw;
 	uint32_t mask;
 
-	raw = sys_read32(config->base + CRC_DR_OFFSET) ^ data->xor_out;
+	raw = sys_read32(config->base + CRC_DR_OFFSET) ^ xor_out;
 	mask = crc_sf32lb_mask(data->width);
 
 	return raw & mask;
@@ -130,7 +122,6 @@ static int crc_sf32lb_begin(const struct device *dev, struct crc_ctx *ctx)
 	struct crc_sf32lb_data *data = dev->data;
 	uint8_t polysize;
 	uint8_t width;
-	uint32_t xor_out;
 	uint32_t cr;
 	uint32_t mask;
 	int ret;
@@ -141,14 +132,13 @@ static int crc_sf32lb_begin(const struct device *dev, struct crc_ctx *ctx)
 
 	k_sem_take(&data->lock, K_FOREVER);
 
-	ret = crc_sf32lb_prepare_config(ctx, &polysize, &width, &xor_out);
+	ret = crc_sf32lb_prepare_config(ctx, &polysize, &width);
 	if (ret != 0) {
 		crc_sf32lb_unlock(dev);
 		return ret;
 	}
 
 	data->width = width;
-	data->xor_out = xor_out;
 	mask = crc_sf32lb_mask(width);
 
 	cr = FIELD_PREP(CRC_CR_POLYSIZE_Msk, polysize);
@@ -229,7 +219,7 @@ static int crc_sf32lb_update(const struct device *dev, struct crc_ctx *ctx, cons
 		}
 	}
 
-	ctx->result = crc_sf32lb_get_result(dev);
+	ctx->result = crc_sf32lb_get_result(dev, ctx->xor_out);
 
 	return 0;
 }
@@ -240,7 +230,7 @@ static int crc_sf32lb_finish(const struct device *dev, struct crc_ctx *ctx)
 		return -EINVAL;
 	}
 
-	ctx->result = crc_sf32lb_get_result(dev);
+	ctx->result = crc_sf32lb_get_result(dev, ctx->xor_out);
 	ctx->state = CRC_STATE_IDLE;
 
 	crc_sf32lb_unlock(dev);
@@ -271,7 +261,6 @@ static int crc_sf32lb_init(const struct device *dev)
 
 	k_sem_init(&data->lock, 1, 1);
 	data->width = 32U;
-	data->xor_out = 0U;
 
 	return 0;
 }

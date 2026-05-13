@@ -11,11 +11,6 @@ LOG_MODULE_REGISTER(crc, CONFIG_CRC_LOG_LEVEL);
 #include <zephyr/device.h>
 #include <zephyr/sys/bit_rev.h>
 
-/* This value needs to be XORed with the final crc value once crc for
- * the entire stream is calculated. This is a requirement of crc32c algo.
- */
-#define CRC32C_XOR_OUT 0xFFFFFFFFUL
-
 static const struct device *const crc_dev = DEVICE_DT_GET(DT_CHOSEN(zephyr_crc));
 
 static int crc_operation(const struct device *const dev, struct crc_ctx *ctx, const uint8_t *src,
@@ -340,6 +335,7 @@ uint32_t crc32_c(uint32_t crc, const uint8_t *buf, size_t len, bool first_pkt, b
 		.polynomial = CRC32C_POLY,
 		.seed = crc,
 		.reversed = CRC_FLAG_REVERSE_OUTPUT | CRC_FLAG_REVERSE_INPUT,
+		.xor_out = last_pkt ? CRC32C_XOR_OUT : 0U,
 	};
 
 	ret = crc_operation(crc_dev, &ctx, buf, len);
@@ -348,7 +344,7 @@ uint32_t crc32_c(uint32_t crc, const uint8_t *buf, size_t len, bool first_pkt, b
 		return 0;
 	}
 
-	return last_pkt ? (ctx.result ^ CRC32C_XOR_OUT) : ctx.result;
+	return ctx.result;
 }
 #endif
 
@@ -364,6 +360,7 @@ uint32_t crc32_ieee_update(uint32_t crc, const uint8_t *buf, size_t len)
 		.polynomial = CRC32_IEEE_POLY,
 		.seed = crc,
 		.reversed = CRC_FLAG_REVERSE_OUTPUT | CRC_FLAG_REVERSE_INPUT,
+		.xor_out = CRC32_IEEE_XOR_OUT,
 	};
 
 	ret = crc_operation(crc_dev, &ctx, buf, len);
