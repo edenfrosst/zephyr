@@ -1390,23 +1390,18 @@ static void uart_stm32_isr(const struct device *dev)
 	 * the whole ISR sees the same status regardless of
 	 * any hardware event that may happen.
 	 */
-	const bool tx_complete = LL_USART_IsEnabledIT_TC(usart) && LL_USART_IsActiveFlag_TC(usart);
+	bool tx_complete = LL_USART_IsEnabledIT_TC(usart) && LL_USART_IsActiveFlag_TC(usart);
 #endif
 
 #ifdef CONFIG_PM
-	if (tx_complete) {
-		if (data->tx_poll_stream_on) {
-			/* A poll stream transmission just completed,
-			 * allow system to suspend
-			 */
-			LL_USART_DisableIT_TC(usart);
-			data->tx_poll_stream_on = false;
-			uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX);
-		}
-		/* Stream transmission was either async or IRQ based,
-		 * constraint will be released at the same time TC IT
-		 * is disabled
-		 */
+	if (tx_complete && data->tx_poll_stream_on) {
+		/* A poll stream transmission just completed, allow system to suspend */
+		LL_USART_DisableIT_TC(usart);
+		data->tx_poll_stream_on = false;
+		uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX);
+
+		/* we finished a poll stream, clear tx_complete so the async handler doesn't fire also */
+		tx_complete = false;
 	}
 #endif
 
