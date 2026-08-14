@@ -219,7 +219,11 @@ static void uart_stm32_rx_wakeup_lock_get(const struct device *dev)
 {
 	struct uart_stm32_data *data = dev->data;
 
-	if (!data->rx_woken) {
+	/* Only while an asynchronous reception is running: that is the only
+	 * case in which an arm of uart_stm32_isr() reports the end of a
+	 * reception and releases the lock again.
+	 */
+	if (data->dma_rx.enabled && !data->rx_woken) {
 		data->rx_woken = true;
 		uart_stm32_pm_policy_state_lock_get_unconditional();
 	}
