@@ -2487,6 +2487,7 @@ static void uart_stm32_suspend_setup(const struct device *dev)
 static int uart_stm32_pm_action(const struct device *dev, enum pm_device_action action)
 {
 	const struct uart_stm32_config *config = dev->config;
+	__maybe_unused struct uart_stm32_data *data = dev->data;
 	int err;
 
 	switch (action) {
@@ -2528,6 +2529,16 @@ static int uart_stm32_pm_action(const struct device *dev, enum pm_device_action 
 		}
 		break;
 	case PM_DEVICE_ACTION_SUSPEND:
+#ifdef CONFIG_UART_ASYNC_API
+		/* Forbid suspending while an asynchronous transfer is ongoing.
+		 * The interrupts that report the end of a transfer do not run
+		 * with the clock stopped, so the transfer wouldn't complete or
+		 * be reported.
+		 */
+		if (data->dma_rx.enabled || (data->dma_tx.buffer_length != 0)) {
+			return -EBUSY;
+		}
+#endif /* CONFIG_UART_ASYNC_API */
 		uart_stm32_suspend_setup(dev);
 		/* Stop device clock. Note: fixed clocks are not handled yet. */
 		err = clock_control_off(config->clock, (clock_control_subsys_t)&config->pclken[0]);
