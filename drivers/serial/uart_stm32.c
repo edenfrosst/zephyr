@@ -1418,8 +1418,10 @@ static void uart_stm32_isr(const struct device *dev)
 		LL_USART_ClearFlag_WKUP(usart);
 
 #ifdef CONFIG_UART_ASYNC_API
-		/* Prevent SoC from entering STOP mode until RX goes IDLE */
-		uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_RX);
+		if (data->dma_rx.enabled) {
+			/* Prevent SoC from entering STOP mode until RX goes IDLE */
+			uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_RX);
+		}
 #endif
 
 #ifdef USART_ISR_REACK
@@ -1587,6 +1589,14 @@ static int uart_stm32_async_rx_disable(const struct device *dev)
 	struct uart_event disabled_event = {
 		.type = UART_RX_DISABLED
 	};
+
+#ifdef CONFIG_PM
+	/* Every interrupt that would release this claim is about to be disabled,
+	 * so release it here, ahead of the early return that would otherwise skip
+	 * it. Releasing a claim this port does not hold is harmless.
+	 */
+	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_RX);
+#endif
 
 	if (!data->dma_rx.enabled) {
 		async_user_callback(data, &disabled_event);
