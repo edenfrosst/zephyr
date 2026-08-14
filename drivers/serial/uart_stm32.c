@@ -178,63 +178,23 @@ static void uart_stm32_pm_enable_wakeup_line(uint32_t wakeup_line)
 #endif /* CONFIG_PM && IS_UART_WAKEUP_FROMSTOP_INSTANCE */
 
 #ifdef CONFIG_PM
-static void uart_stm32_pm_policy_state_lock_get_unconditional(void)
-{
-	pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
-	if (IS_ENABLED(CONFIG_PM_S2RAM)) {
-		pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
-	}
-}
-
-static void uart_stm32_pm_policy_state_lock_get(const struct device *dev)
+static void uart_stm32_pm_lock_get(const struct device *dev, enum uart_stm32_pm_lock lock)
 {
 	struct uart_stm32_data *data = dev->data;
 
-	if (!data->pm_policy_state_on) {
-		data->pm_policy_state_on = true;
-		uart_stm32_pm_policy_state_lock_get_unconditional();
+	if (!atomic_test_and_set_bit(data->pm_lock, lock)) {
+		pm_policy_device_power_lock_get(dev);
 	}
 }
 
-static void uart_stm32_pm_policy_state_lock_put_unconditional(void)
-{
-	pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
-	if (IS_ENABLED(CONFIG_PM_S2RAM)) {
-		pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
-	}
-}
-
-static void uart_stm32_pm_policy_state_lock_put(const struct device *dev)
+static void uart_stm32_pm_lock_put(const struct device *dev, enum uart_stm32_pm_lock lock)
 {
 	struct uart_stm32_data *data = dev->data;
 
-	if (data->pm_policy_state_on) {
-		data->pm_policy_state_on = false;
-		uart_stm32_pm_policy_state_lock_put_unconditional();
+	if (atomic_test_and_clear_bit(data->pm_lock, lock)) {
+		pm_policy_device_power_lock_put(dev);
 	}
 }
-
-#ifdef CONFIG_UART_ASYNC_API
-static void uart_stm32_rx_wakeup_lock_get(const struct device *dev)
-{
-	struct uart_stm32_data *data = dev->data;
-
-	if (!data->rx_woken) {
-		data->rx_woken = true;
-		uart_stm32_pm_policy_state_lock_get_unconditional();
-	}
-}
-
-static void uart_stm32_rx_wakeup_lock_put(const struct device *dev)
-{
-	struct uart_stm32_data *data = dev->data;
-
-	if (data->rx_woken) {
-		data->rx_woken = false;
-		uart_stm32_pm_policy_state_lock_put_unconditional();
-	}
-}
-#endif /* CONFIG_UART_ASYNC_API */
 #endif /* CONFIG_PM */
 
 static inline int uart_stm32_set_baudrate(const struct device *dev, uint32_t baud_rate)
@@ -825,7 +785,7 @@ static void uart_stm32_poll_out_visitor(const struct device *dev, uint16_t out, 
 		/* Don't allow system to suspend until stream
 		 * transmission has completed
 		 */
-		uart_stm32_pm_policy_state_lock_get(dev);
+		uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_TX);
 
 		/* Enable TC interrupt so we can release suspend
 		 * constraint when done
@@ -1087,7 +1047,7 @@ static void uart_stm32_irq_tx_enable(const struct device *dev)
 	key = irq_lock();
 	data->tx_poll_stream_on = false;
 	data->tx_int_stream_on = true;
-	uart_stm32_pm_policy_state_lock_get(dev);
+	uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_TX);
 #endif
 	LL_USART_EnableIT_TC(config->usart);
 
@@ -1110,7 +1070,7 @@ static void uart_stm32_irq_tx_disable(const struct device *dev)
 
 #ifdef CONFIG_PM
 	data->tx_int_stream_on = false;
-	uart_stm32_pm_policy_state_lock_put(dev);
+	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX);
 #endif
 
 #ifdef CONFIG_PM
@@ -1441,7 +1401,7 @@ static void uart_stm32_isr(const struct device *dev)
 			 */
 			LL_USART_DisableIT_TC(usart);
 			data->tx_poll_stream_on = false;
-			uart_stm32_pm_policy_state_lock_put(dev);
+			uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX);
 		}
 		/* Stream transmission was either async or IRQ based,
 		 * constraint will be released at the same time TC IT
@@ -1465,7 +1425,7 @@ static void uart_stm32_isr(const struct device *dev)
 
 #ifdef CONFIG_UART_ASYNC_API
 		/* Prevent SoC from entering STOP mode until RX goes IDLE */
-		uart_stm32_rx_wakeup_lock_get(dev);
+		uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_RX);
 #endif
 
 #ifdef USART_ISR_REACK
@@ -1495,7 +1455,7 @@ static void uart_stm32_isr(const struct device *dev)
 
 #ifdef CONFIG_PM
 		/* Allow SoC to enter STOP mode now that RX is IDLE */
-		uart_stm32_rx_wakeup_lock_put(dev);
+		uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_RX);
 #endif
 
 		if (data->dma_rx.timeout == 0) {
@@ -1510,7 +1470,7 @@ static void uart_stm32_isr(const struct device *dev)
 		/* Generate TX_DONE event when transmission is done */
 		async_evt_tx_done(data);
 #ifdef CONFIG_PM
-		uart_stm32_pm_policy_state_lock_put_unconditional();
+		uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX); // TODO(ef): should this happen before the evt_tx_done?
 #endif
 	} else if (ll_usart_is_enabled_rxne(usart) && ll_usart_is_active_rxne(usart)) {
 #ifdef USART_SR_RXNE
@@ -1528,7 +1488,7 @@ static void uart_stm32_isr(const struct device *dev)
 		LL_USART_ClearFlag_RTO(usart);
 #ifdef CONFIG_PM
 		/* Allow SoC to enter STOP mode now that RX has timed out */
-		uart_stm32_rx_wakeup_lock_put(dev);
+		uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_RX);
 #endif
 		uart_stm32_dma_rx_flush(dev, STM32_ASYNC_STATUS_TIMEOUT);
 #endif /* HAS_RTO */
@@ -1871,9 +1831,8 @@ static int uart_stm32_async_tx(const struct device *dev,
 	}
 
 #ifdef CONFIG_PM
-
 	/* Do not allow system to suspend until transmission has completed */
-	uart_stm32_pm_policy_state_lock_get_unconditional();
+	uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_TX);
 #endif
 
 	if (IS_ENABLED(CONFIG_UART_STM32U5_ERRATA_DMAT_LOWPOWER)) {

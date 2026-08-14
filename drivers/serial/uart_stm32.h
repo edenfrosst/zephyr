@@ -12,9 +12,12 @@
 #ifndef ZEPHYR_DRIVERS_SERIAL_UART_STM32_H_
 #define ZEPHYR_DRIVERS_SERIAL_UART_STM32_H_
 
+#include <zephyr/drivers/dma.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/reset.h>
 #include <zephyr/drivers/uart.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 
 #include <stm32_ll_usart.h>
 
@@ -69,7 +72,7 @@ struct uart_dma_stream {
 	uint8_t priority;
 	bool src_addr_increment;
 	bool dst_addr_increment;
-	int fifo_threshold;
+	uint8_t fifo_threshold;
 	struct dma_block_config blk_cfg;
 	uint8_t *buffer;
 	size_t buffer_length;
@@ -80,6 +83,12 @@ struct uart_dma_stream {
 	bool enabled;
 };
 #endif
+
+enum uart_stm32_pm_lock {
+	UART_STM32_PM_LOCK_TX,
+	UART_STM32_PM_LOCK_RX,
+	UART_STM32_PM_LOCK_COUNT,
+};
 
 /* driver data */
 struct uart_stm32_data {
@@ -102,8 +111,7 @@ struct uart_stm32_data {
 #ifdef CONFIG_PM
 	bool tx_poll_stream_on;
 	bool tx_int_stream_on;
-	bool pm_policy_state_on;
-	bool rx_woken;
+	ATOMIC_DEFINE(pm_lock, UART_STM32_PM_LOCK_COUNT);
 #endif
 };
 
