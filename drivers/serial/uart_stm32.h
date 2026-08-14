@@ -12,9 +12,12 @@
 #ifndef ZEPHYR_DRIVERS_SERIAL_UART_STM32_H_
 #define ZEPHYR_DRIVERS_SERIAL_UART_STM32_H_
 
+#include <zephyr/drivers/dma.h>
 #include <zephyr/drivers/pinctrl.h>
 #include <zephyr/drivers/reset.h>
 #include <zephyr/drivers/uart.h>
+#include <zephyr/kernel.h>
+#include <zephyr/sys/atomic.h>
 
 #include <stm32_ll_usart.h>
 
@@ -69,7 +72,7 @@ struct uart_dma_stream {
 	uint8_t priority;
 	bool src_addr_increment;
 	bool dst_addr_increment;
-	int fifo_threshold;
+	uint8_t fifo_threshold;
 	struct dma_block_config blk_cfg;
 	uint8_t *buffer;
 	size_t buffer_length;
@@ -80,6 +83,23 @@ struct uart_dma_stream {
 	bool enabled;
 };
 #endif
+
+/*
+ * What is keeping the system awake, one bit per source. A source holds its own
+ * bit for as long as it needs the states locked, so no source can release
+ * another's claim, and taking or releasing the same one twice is harmless.
+ *
+ * The two transmit sources are mutually exclusive by construction:
+ * uart_poll_out() only claims TX_POLL while no stream owns the transmitter, and
+ * a stream claims TX_STREAM before releasing any outstanding TX_POLL. That is
+ * what lets the transmit-complete arm disarm the interrupt when it sees TX_POLL.
+ */
+enum uart_stm32_pm_lock {
+	UART_STM32_PM_LOCK_TX_POLL,
+	UART_STM32_PM_LOCK_TX_STREAM,
+	UART_STM32_PM_LOCK_RX,
+	UART_STM32_PM_LOCK_COUNT,
+};
 
 /* driver data */
 struct uart_stm32_data {
@@ -100,10 +120,7 @@ struct uart_stm32_data {
 	size_t rx_next_buffer_len;
 #endif
 #ifdef CONFIG_PM
-	bool tx_poll_stream_on;
-	bool tx_int_stream_on;
-	bool pm_policy_state_on;
-	bool rx_woken;
+	ATOMIC_DEFINE(pm_lock, UART_STM32_PM_LOCK_COUNT);
 #endif
 };
 

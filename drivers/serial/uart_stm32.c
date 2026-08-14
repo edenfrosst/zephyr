@@ -113,63 +113,29 @@ uint32_t lpuartdiv_calc(const uint64_t clock_rate, const uint32_t baud_rate)
 #endif
 
 #ifdef CONFIG_PM
-static void uart_stm32_pm_policy_state_lock_get_unconditional(void)
-{
-	pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
-	if (IS_ENABLED(CONFIG_PM_S2RAM)) {
-		pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
-	}
-}
-
-static void uart_stm32_pm_policy_state_lock_get(const struct device *dev)
+static void uart_stm32_pm_lock_get(const struct device *dev, enum uart_stm32_pm_lock lock)
 {
 	struct uart_stm32_data *data = dev->data;
 
-	if (!data->pm_policy_state_on) {
-		data->pm_policy_state_on = true;
-		uart_stm32_pm_policy_state_lock_get_unconditional();
+	if (!atomic_test_and_set_bit(data->pm_lock, lock)) {
+		pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+		if (IS_ENABLED(CONFIG_PM_S2RAM)) {
+			pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+		}
 	}
 }
 
-static void uart_stm32_pm_policy_state_lock_put_unconditional(void)
-{
-	pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
-	if (IS_ENABLED(CONFIG_PM_S2RAM)) {
-		pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
-	}
-}
-
-static void uart_stm32_pm_policy_state_lock_put(const struct device *dev)
+static void uart_stm32_pm_lock_put(const struct device *dev, enum uart_stm32_pm_lock lock)
 {
 	struct uart_stm32_data *data = dev->data;
 
-	if (data->pm_policy_state_on) {
-		data->pm_policy_state_on = false;
-		uart_stm32_pm_policy_state_lock_put_unconditional();
+	if (atomic_test_and_clear_bit(data->pm_lock, lock)) {
+		pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+		if (IS_ENABLED(CONFIG_PM_S2RAM)) {
+			pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_RAM, PM_ALL_SUBSTATES);
+		}
 	}
 }
-
-#ifdef CONFIG_UART_ASYNC_API
-static void uart_stm32_rx_wakeup_lock_get(const struct device *dev)
-{
-	struct uart_stm32_data *data = dev->data;
-
-	if (!data->rx_woken) {
-		data->rx_woken = true;
-		uart_stm32_pm_policy_state_lock_get_unconditional();
-	}
-}
-
-static void uart_stm32_rx_wakeup_lock_put(const struct device *dev)
-{
-	struct uart_stm32_data *data = dev->data;
-
-	if (data->rx_woken) {
-		data->rx_woken = false;
-		uart_stm32_pm_policy_state_lock_put_unconditional();
-	}
-}
-#endif /* CONFIG_UART_ASYNC_API */
 #endif /* CONFIG_PM */
 
 static inline int uart_stm32_set_baudrate(const struct device *dev, uint32_t baud_rate)
@@ -752,16 +718,16 @@ static void uart_stm32_poll_out_visitor(const struct device *dev, uint16_t out, 
 
 #ifdef CONFIG_PM
 
-	/* If an interrupt transmission is in progress, the pm constraint is already managed by the
-	 * call of uart_stm32_irq_tx_[en|dis]able
+	/* If a stream transmission is in progress, the pm constraint is already
+	 * held by uart_stm32_irq_tx_enable() or uart_stm32_async_tx(), and
+	 * whichever of them took it will release it.
 	 */
-	if (!data->tx_poll_stream_on && !data->tx_int_stream_on) {
-		data->tx_poll_stream_on = true;
-
+	if (!atomic_test_bit(data->pm_lock, UART_STM32_PM_LOCK_TX_STREAM) &&
+	    !atomic_test_bit(data->pm_lock, UART_STM32_PM_LOCK_TX_POLL)) {
 		/* Don't allow system to suspend until stream
 		 * transmission has completed
 		 */
-		uart_stm32_pm_policy_state_lock_get(dev);
+		uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_TX_POLL);
 
 		/* Enable TC interrupt so we can release suspend
 		 * constraint when done
@@ -1015,15 +981,17 @@ static void uart_stm32_irq_tx_enable(const struct device *dev)
 {
 	const struct uart_stm32_config *config = dev->config;
 #ifdef CONFIG_PM
-	struct uart_stm32_data *data = dev->data;
 	unsigned int key;
 #endif
 
 #ifdef CONFIG_PM
 	key = irq_lock();
-	data->tx_poll_stream_on = false;
-	data->tx_int_stream_on = true;
-	uart_stm32_pm_policy_state_lock_get(dev);
+	uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_TX_STREAM);
+	/* A polled transmission still outstanding hands its claim over: this
+	 * stream now owns the transmitter, and the transmit-complete arm must
+	 * not treat the next interrupt as the end of a polled character.
+	 */
+	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_POLL);
 #endif
 	LL_USART_EnableIT_TC(config->usart);
 
@@ -1036,7 +1004,6 @@ static void uart_stm32_irq_tx_disable(const struct device *dev)
 {
 	const struct uart_stm32_config *config = dev->config;
 #ifdef CONFIG_PM
-	struct uart_stm32_data *data = dev->data;
 	unsigned int key;
 
 	key = irq_lock();
@@ -1045,8 +1012,7 @@ static void uart_stm32_irq_tx_disable(const struct device *dev)
 	LL_USART_DisableIT_TC(config->usart);
 
 #ifdef CONFIG_PM
-	data->tx_int_stream_on = false;
-	uart_stm32_pm_policy_state_lock_put(dev);
+	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_STREAM);
 #endif
 
 #ifdef CONFIG_PM
@@ -1223,9 +1189,6 @@ static inline void async_evt_tx_done(struct uart_stm32_data *data)
 	/* Reset tx buffer */
 	data->dma_tx.buffer_length = 0;
 	data->dma_tx.counter = 0;
-#ifdef CONFIG_PM
-	data->tx_int_stream_on = false;
-#endif
 
 	async_user_callback(data, &event);
 }
@@ -1243,9 +1206,6 @@ static inline void async_evt_tx_abort(struct uart_stm32_data *data)
 	/* Reset tx buffer */
 	data->dma_tx.buffer_length = 0;
 	data->dma_tx.counter = 0;
-#ifdef CONFIG_PM
-	data->tx_int_stream_on = false;
-#endif
 
 	async_user_callback(data, &event);
 }
@@ -1375,19 +1335,13 @@ static void uart_stm32_isr(const struct device *dev)
 #endif
 
 #ifdef CONFIG_PM
-	if (tx_complete) {
-		if (data->tx_poll_stream_on) {
-			/* A poll stream transmission just completed,
-			 * allow system to suspend
-			 */
-			LL_USART_DisableIT_TC(usart);
-			data->tx_poll_stream_on = false;
-			uart_stm32_pm_policy_state_lock_put(dev);
-		}
-		/* Stream transmission was either async or IRQ based,
-		 * constraint will be released at the same time TC IT
-		 * is disabled
+	if (tx_complete && atomic_test_bit(data->pm_lock, UART_STM32_PM_LOCK_TX_POLL)) {
+		/* A polled transmission just completed, allow system to suspend.
+		 * A stream one is released where its interrupt is disarmed
+		 * instead, so this arm only ever ends the polled case.
 		 */
+		LL_USART_DisableIT_TC(usart);
+		uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_POLL);
 	}
 #endif
 
@@ -1406,7 +1360,7 @@ static void uart_stm32_isr(const struct device *dev)
 
 #ifdef CONFIG_UART_ASYNC_API
 		/* Prevent SoC from entering STOP mode until RX goes IDLE */
-		uart_stm32_rx_wakeup_lock_get(dev);
+		uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_RX);
 #endif
 
 #ifdef USART_ISR_REACK
@@ -1436,7 +1390,7 @@ static void uart_stm32_isr(const struct device *dev)
 
 #ifdef CONFIG_PM
 		/* Allow SoC to enter STOP mode now that RX is IDLE */
-		uart_stm32_rx_wakeup_lock_put(dev);
+		uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_RX);
 #endif
 
 		if (data->dma_rx.timeout == 0) {
@@ -1448,11 +1402,16 @@ static void uart_stm32_isr(const struct device *dev)
 		}
 	} else if (tx_complete) {
 		LL_USART_DisableIT_TC(usart);
+#ifdef CONFIG_PM
+		/* Released before the event is reported, not after: an
+		 * application streaming back to back starts the next transfer
+		 * from this callback, and it can only take this claim if the
+		 * finished transfer has given it up first.
+		 */
+		uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_STREAM);
+#endif
 		/* Generate TX_DONE event when transmission is done */
 		async_evt_tx_done(data);
-#ifdef CONFIG_PM
-		uart_stm32_pm_policy_state_lock_put_unconditional();
-#endif
 	} else if (LL_USART_IsEnabledIT_RXNE(usart) && LL_USART_IsActiveFlag_RXNE(usart)) {
 #ifdef USART_SR_RXNE
 		/* clear the RXNE flag, because Rx data was not read */
@@ -1469,7 +1428,7 @@ static void uart_stm32_isr(const struct device *dev)
 		LL_USART_ClearFlag_RTO(usart);
 #ifdef CONFIG_PM
 		/* Allow SoC to enter STOP mode now that RX has timed out */
-		uart_stm32_rx_wakeup_lock_put(dev);
+		uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_RX);
 #endif
 		uart_stm32_dma_rx_flush(dev, STM32_ASYNC_STATUS_TIMEOUT);
 #endif /* HAS_RTO */
@@ -1758,8 +1717,13 @@ static int uart_stm32_async_tx(const struct device *dev,
 	}
 
 #ifdef CONFIG_PM
-	data->tx_poll_stream_on = false;
-	data->tx_int_stream_on = true;
+	/* Do not allow system to suspend until transmission has completed. Taken
+	 * before the transfer is described so that uart_poll_out() sees the
+	 * transmitter owned from here on, and a polled character outstanding at
+	 * this point hands its claim over.
+	 */
+	uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_TX_STREAM);
+	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_POLL);
 #endif
 	data->dma_tx.buffer = (uint8_t *)tx_data;
 	data->dma_tx.buffer_length = buf_size;
@@ -1810,12 +1774,6 @@ static int uart_stm32_async_tx(const struct device *dev,
 		/* Start TX timer */
 		async_timer_start(&data->dma_tx.timeout_work, data->dma_tx.timeout);
 	}
-
-#ifdef CONFIG_PM
-
-	/* Do not allow system to suspend until transmission has completed */
-	uart_stm32_pm_policy_state_lock_get_unconditional();
-#endif
 
 	if (IS_ENABLED(CONFIG_UART_STM32U5_ERRATA_DMAT_LOWPOWER)) {
 		/**
