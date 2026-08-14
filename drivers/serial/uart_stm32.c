@@ -1461,7 +1461,7 @@ static void uart_stm32_isr(const struct device *dev)
 			async_timer_start(&data->dma_rx.timeout_work,
 								data->dma_rx.timeout);
 		}
-	} else if (tx_complete) {
+	} else if (tx_complete && (data->dma_tx.buffer_length != 0)) {
 		LL_USART_DisableIT_TC(usart);
 #ifdef CONFIG_PM
 		/* Released before the event is reported, not after: an
@@ -1747,6 +1747,24 @@ void uart_stm32_dma_rx_cb(const struct device *dma_dev, void *user_data,
 	}
 }
 
+/*
+ * Undo what uart_stm32_async_tx() set up before it could start the transfer.
+ * Without this the transmit-complete interrupt stays armed with no transfer
+ * behind it, and the next one to fire reports a completion that never happened
+ * and releases a lock this instance no longer owns.
+ */
+static void uart_stm32_async_tx_setup_undo(const struct device *dev)
+{
+	const struct uart_stm32_config *config = dev->config;
+	struct uart_stm32_data *data = dev->data;
+
+	LL_USART_DisableIT_TC(config->usart);
+	data->dma_tx.buffer_length = 0;
+#ifdef CONFIG_PM
+	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_STREAM);
+#endif
+}
+
 static int uart_stm32_async_tx(const struct device *dev,
 		const uint8_t *tx_data, size_t buf_size, int32_t timeout)
 {
@@ -1786,10 +1804,12 @@ static int uart_stm32_async_tx(const struct device *dev,
 	}
 
 #ifdef CONFIG_PM
-	/* Do not allow system to suspend until transmission has completed. Taken
-	 * before the transfer is described so that uart_poll_out() sees the
-	 * transmitter owned from here on, and a polled character outstanding at
-	 * this point hands its claim over.
+	/* Do not allow system to suspend until transmission has completed.
+	 *
+	 * Taken before the transfer is described rather than once it is running,
+	 * so that a non-zero buffer_length always means this claim is held: that
+	 * is what lets the abort and failure paths below release it exactly
+	 * once. A polled character still outstanding here hands its claim over.
 	 */
 	uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_TX_STREAM);
 	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_POLL);
@@ -1832,11 +1852,13 @@ static int uart_stm32_async_tx(const struct device *dev,
 
 		if (ret != 0) {
 			LOG_ERR("dma tx config error!");
+			uart_stm32_async_tx_setup_undo(dev);
 			return -EINVAL;
 		}
 
 		if (dma_start(data->dma_tx.dma_dev, data->dma_tx.dma_channel)) {
 			LOG_ERR("UART err: TX DMA start failed!");
+			uart_stm32_async_tx_setup_undo(dev);
 			return -EFAULT;
 		}
 
@@ -1999,9 +2021,22 @@ static int uart_stm32_async_rx_enable(const struct device *dev,
 
 static int uart_stm32_async_tx_abort(const struct device *dev)
 {
+	const struct uart_stm32_config *config = dev->config;
 	struct uart_stm32_data *data = dev->data;
-	size_t tx_buffer_length = data->dma_tx.buffer_length;
+	size_t tx_buffer_length;
 	struct dma_status stat;
+	unsigned int key;
+
+	/* Disarm the transmit-complete interrupt under the same lock that reads
+	 * the transfer length, so this path and the interrupt cannot both
+	 * decide they are the one ending this transmission.
+	 */
+	key = irq_lock();
+	tx_buffer_length = data->dma_tx.buffer_length;
+	if (tx_buffer_length != 0) {
+		LL_USART_DisableIT_TC(config->usart);
+	}
+	irq_unlock(key);
 
 	if (tx_buffer_length == 0) {
 		return -EFAULT;
@@ -2017,6 +2052,14 @@ static int uart_stm32_async_tx_abort(const struct device *dev)
 	dma_suspend(data->dma_tx.dma_dev, data->dma_tx.dma_channel);
 #endif
 	dma_stop(data->dma_tx.dma_dev, data->dma_tx.dma_channel);
+
+#ifdef CONFIG_PM
+	/* The transmit-complete interrupt will not run for this transfer, so
+	 * the release belongs here.
+	 */
+	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_STREAM);
+#endif
+
 	async_evt_tx_abort(data);
 
 	return 0;
