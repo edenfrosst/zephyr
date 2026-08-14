@@ -1632,6 +1632,20 @@ static int uart_stm32_async_rx_disable(const struct device *dev)
 	struct uart_event disabled_event = {
 		.type = UART_RX_DISABLED
 	};
+#ifdef CONFIG_PM
+	unsigned int key;
+#endif
+
+#ifdef CONFIG_PM
+	/* Reception ends here rather than at an interrupt arm, and the arms
+	 * that would release the wake lock are disabled below. Release it
+	 * before any early return can skip it, under irq_lock() as every other
+	 * caller outside interrupt context does.
+	 */
+	key = irq_lock();
+	uart_stm32_rx_wakeup_lock_put(dev);
+	irq_unlock(key);
+#endif
 
 	if (!data->dma_rx.enabled) {
 		async_user_callback(data, &disabled_event);
