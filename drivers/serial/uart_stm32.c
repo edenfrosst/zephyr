@@ -1717,7 +1717,7 @@ static int uart_stm32_async_tx(const struct device *dev,
 	const struct uart_stm32_config *config = dev->config;
 	USART_TypeDef *usart = config->usart;
 	struct uart_stm32_data *data = dev->data;
-	__maybe_unused unsigned int key;
+	unsigned int key;
 	int ret;
 
 #if defined(CONFIG_PM_DEVICE)
@@ -1740,13 +1740,24 @@ static int uart_stm32_async_tx(const struct device *dev,
 		return -ENODEV;
 	}
 
-	if (data->dma_tx.buffer_length != 0) {
-		return -EBUSY;
-	}
-
 	if (!stm32_buf_in_nocache((uintptr_t)tx_data, buf_size)) {
 		LOG_ERR("Tx buffer should be placed in a nocache memory region");
 		return -EFAULT;
+	}
+
+	/* Claiming the transmitter, describing the transfer and arming its
+	 * interrupt are one step. buffer_length is what every other path reads to
+	 * decide whether a transmission is outstanding, so a starter that tested
+	 * it and then published separately could be overtaken between the two - by
+	 * an application starting its next transfer from the completion callback
+	 * of the previous one, which runs in interrupt context. The DMA setup
+	 * below stays outside: it is long, and interrupts are not held across it.
+	 */
+	key = irq_lock();
+
+	if (data->dma_tx.buffer_length != 0) {
+		irq_unlock(key);
+		return -EBUSY;
 	}
 
 #ifdef CONFIG_PM
@@ -1760,8 +1771,6 @@ static int uart_stm32_async_tx(const struct device *dev,
 	uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_TX_STREAM);
 	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_POLL);
 #endif
-
-	key = irq_lock();
 
 	/* Clear TC before the transfer is described. A polled character may have
 	 * left the interrupt armed, and its completion must not be taken for this
