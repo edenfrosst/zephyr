@@ -1820,17 +1820,24 @@ static int uart_stm32_async_tx(const struct device *dev,
 	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_POLL);
 #endif
 
+	key = irq_lock();
+
+	/* Clear TC before the transfer is described. A polled character may have
+	 * left the interrupt armed, and its completion must not be taken for this
+	 * transfer's - which a non-zero buffer_length would make it look like.
+	 */
+	LL_USART_ClearFlag_TC(usart);
+
 	data->dma_tx.buffer = (uint8_t *)tx_data;
 	data->dma_tx.buffer_length = buf_size;
 	data->dma_tx.timeout = timeout;
 
-	LOG_DBG("tx: l=%d", data->dma_tx.buffer_length);
-
-	/* Clear TC flag */
-	LL_USART_ClearFlag_TC(usart);
-
 	/* Enable TC interrupt so we can signal correct TX done */
 	LL_USART_EnableIT_TC(usart);
+
+	irq_unlock(key);
+
+	LOG_DBG("tx: l=%d", data->dma_tx.buffer_length);
 
 	/**
 	 * Setup DMA descriptor for TX.
