@@ -1004,19 +1004,24 @@ static void uart_stm32_irq_tx_disable(const struct device *dev)
 {
 	const struct uart_stm32_config *config = dev->config;
 #ifdef CONFIG_PM
-	unsigned int key;
+	struct uart_stm32_data *data = dev->data;
+	unsigned int key = irq_lock();
 
-	key = irq_lock();
-#endif
+	/* The transmit-complete interrupt is what ends a polled transmission, so
+	 * leave it armed while one is outstanding. Disarming it here would strand
+	 * that claim with nothing left to release it, and releasing the claim
+	 * instead would let the system sleep with a character still leaving the
+	 * shift register.
+	 */
+	if (!atomic_test_bit(data->pm_lock, UART_STM32_PM_LOCK_TX_POLL)) {
+		LL_USART_DisableIT_TC(config->usart);
+	}
 
-	LL_USART_DisableIT_TC(config->usart);
-
-#ifdef CONFIG_PM
 	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_STREAM);
-#endif
 
-#ifdef CONFIG_PM
 	irq_unlock(key);
+#else
+	LL_USART_DisableIT_TC(config->usart);
 #endif
 }
 
@@ -1755,6 +1760,7 @@ static int uart_stm32_async_tx(const struct device *dev,
 	uart_stm32_pm_lock_get(dev, UART_STM32_PM_LOCK_TX_STREAM);
 	uart_stm32_pm_lock_put(dev, UART_STM32_PM_LOCK_TX_POLL);
 #endif
+
 	data->dma_tx.buffer = (uint8_t *)tx_data;
 	data->dma_tx.buffer_length = buf_size;
 	data->dma_tx.timeout = timeout;
