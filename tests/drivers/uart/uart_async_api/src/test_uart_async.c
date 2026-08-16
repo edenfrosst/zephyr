@@ -1219,6 +1219,95 @@ ZTEST_USER(uart_async_var_buf_length, test_var_buf_length)
 	zassert_ok(uart_configure(uart_dev, &uart_cfg));
 }
 
+/*
+ * A reception has to be reported once, including when the application ends it
+ * from inside the callback that reported it - which is the ordinary way to stop
+ * on a condition the data itself carries. uart_rx_disable() reports whatever is
+ * still pending, so a driver that has not moved past the segment it is in the
+ * middle of reporting reports the same bytes again. Nothing lets the
+ * application notice: rx.len is a length relative to rx.offset, so a consumer
+ * has nothing to do with it but accumulate.
+ */
+static ZTEST_BMEM volatile size_t disable_in_cb_rx_total;
+static ZTEST_BMEM volatile bool disable_in_cb_torn_down;
+
+static void test_disable_in_cb_callback(const struct device *dev, struct uart_event *evt,
+					void *user_data)
+{
+	ARG_UNUSED(user_data);
+
+	switch (evt->type) {
+	case UART_TX_DONE:
+		k_sem_give(&tx_done);
+		break;
+	case UART_RX_RDY:
+		disable_in_cb_rx_total += evt->data.rx.len;
+		/* Once only: the disable reports into this same callback, so an
+		 * unguarded call recurses.
+		 */
+		if (!disable_in_cb_torn_down) {
+			disable_in_cb_torn_down = true;
+			(void)uart_rx_disable(dev);
+		}
+		break;
+	case UART_RX_BUF_RELEASED:
+		k_sem_give(&rx_buf_released);
+		break;
+	case UART_RX_DISABLED:
+		k_sem_give(&rx_disabled);
+		break;
+	default:
+		break;
+	}
+}
+
+static void *disable_from_callback_setup(void)
+{
+	static int idx;
+
+	uart_async_test_init(idx++);
+
+	disable_in_cb_rx_total = 0;
+	disable_in_cb_torn_down = false;
+	uart_callback_set(uart_dev, test_disable_in_cb_callback, NULL);
+
+	return NULL;
+}
+
+ZTEST_USER(uart_async_disable_in_cb, test_disable_from_callback)
+{
+#if NOCACHE_MEM
+	static __aligned(sizeof(void *)) uint8_t rx_buf[64] __used __NOCACHE;
+	static __aligned(sizeof(void *)) uint8_t tx_buf[48] __used __NOCACHE;
+#else
+	__aligned(sizeof(void *)) uint8_t rx_buf[64];
+	__aligned(sizeof(void *)) uint8_t tx_buf[48];
+#endif /* NOCACHE_MEM */
+
+	memset(rx_buf, 0, sizeof(rx_buf));
+	memset(tx_buf, 0xaa, sizeof(tx_buf));
+
+	/* The transmission is longer than half the receive buffer, so a driver
+	 * that reports at a DMA half transfer does so while the rest of it is
+	 * still arriving. That is what puts the teardown inside the reception,
+	 * rather than after it has ended on its own.
+	 */
+	zassert_ok(uart_rx_enable(uart_dev, rx_buf, sizeof(rx_buf), 50 * USEC_PER_MSEC));
+	zassert_ok(uart_tx(uart_dev, tx_buf, sizeof(tx_buf), SYS_FOREVER_US));
+
+	zassert_ok(k_sem_take(&tx_done, K_MSEC(500)), "TX_DONE timeout");
+	zassert_ok(k_sem_take(&rx_disabled, K_MSEC(500)), "RX_DISABLED timeout");
+
+	zassert_not_equal(disable_in_cb_rx_total, 0, "Nothing was reported");
+	zassert_true(disable_in_cb_rx_total <= sizeof(tx_buf),
+		     "Reported %zu bytes of a %zu byte transmission, so a segment was "
+		     "reported more than once",
+		     disable_in_cb_rx_total, sizeof(tx_buf));
+}
+
+ZTEST_SUITE(uart_async_disable_in_cb, NULL, disable_from_callback_setup,
+		NULL, NULL, NULL);
+
 ZTEST_SUITE(uart_async_single_read, NULL, single_read_setup,
 		NULL, NULL, NULL);
 

@@ -1211,16 +1211,20 @@ static inline void async_evt_rx_rdy(struct uart_stm32_data *data)
 		.data.rx.offset = data->dma_rx.offset
 	};
 
-	/* When cyclic DMA is used, buffer positions are not updated - call callback every time*/
-	if (data->dma_rx.dma_cfg.cyclic == 0) {
-		/* update the current pos for new data */
-		data->dma_rx.offset = data->dma_rx.counter;
+	/* Move past this segment before reporting it, not after. An application
+	 * may call uart_rx_disable() from the callback below, which flushes again,
+	 * and a position still pointing at the start of the segment makes that
+	 * second flush report the same bytes a second time.
+	 *
+	 * In cyclic mode uart_stm32_dma_rx_flush() remains the authority on where
+	 * the position ends up, because reception wraps to the start of the buffer
+	 * rather than only advancing. What is set here is how far reporting has
+	 * reached, which is all a re-entrant flush needs.
+	 */
+	data->dma_rx.offset = data->dma_rx.counter;
 
-		/* send event only for new data */
-		if (event.data.rx.len > 0) {
-			async_user_callback(data, &event);
-		}
-	} else {
+	/* send event only for new data */
+	if (event.data.rx.len > 0) {
 		async_user_callback(data, &event);
 	}
 }
