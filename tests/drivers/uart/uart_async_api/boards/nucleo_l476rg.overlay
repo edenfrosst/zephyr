@@ -1,0 +1,21 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+
+/* usart1 in single-wire half-duplex, which is the loopback this test's
+ * gpio_loopback fixture asks for without needing the pins jumpered: setting
+ * HDSEL connects TX and RX internally and releases the RX pin (RM0351 section
+ * 40.5.12). The console stays on usart2, wired to the ST-LINK VCP.
+ *
+ * DMA1 channel 4 transmits and channel 5 receives, both at request 2 (RM0351
+ * Table 46 in section 11.6).
+ */
+dut: &usart1 {
+	single-wire;
+
+	dmas = <&dma1 4 2 (STM32_DMA_PERIPH_TX | STM32_DMA_PRIORITY_HIGH)>,
+	       <&dma1 5 2 (STM32_DMA_PERIPH_RX | STM32_DMA_PRIORITY_HIGH)>;
+	dma-names = "tx", "rx";
+};
+
+&dma1 {
+	status = "okay";
+};
