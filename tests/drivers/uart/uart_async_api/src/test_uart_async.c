@@ -9,6 +9,7 @@
 
 #if defined(CONFIG_PM)
 #include <zephyr/pm/pm.h>
+#include <zephyr/pm/policy.h>
 #endif
 
 #if defined(CONFIG_DCACHE) && defined(CONFIG_DT_DEFINED_NOCACHE)
@@ -1413,6 +1414,125 @@ ZTEST(uart_async_pm, test_uart_pm_light_sleep)
 
 		tdata_check_recv_buffers(tx_buf, sizeof(tx_buf), UART_CFG_DATA_BITS_8);
 	}
+}
+
+/*
+ * The tests above infer the driver's power-management behaviour from whether
+ * the system managed to idle. That is indirect: it needs an idle window long
+ * enough to be unambiguous, and it reports "did not sleep" for a lock left held
+ * by anything at all, not by the port under test.
+ *
+ * pm_policy_state_lock_is_active() asks the question directly. A driver takes a
+ * state lock to keep the system out of a sleep state for the duration of a
+ * transfer, and every path that takes one has to hand it back when the transfer
+ * ends - including the paths that end a transfer early, which is where the
+ * releases tend to be missing.
+ */
+static bool pm_lock_settles_to(bool expected)
+{
+	/* The claim can be handed back from an interrupt that has not run yet,
+	 * so allow a bounded settle rather than sampling the instant the
+	 * completion event arrives. A leak never settles.
+	 */
+	for (int i = 0; i < 100; i++) {
+		if (pm_policy_state_lock_is_active(PM_STATE_SUSPEND_TO_IDLE,
+						   PM_ALL_SUBSTATES) == expected) {
+			return true;
+		}
+		k_msleep(1);
+	}
+
+	return false;
+}
+
+/*
+ * Each operation test starts by waiting for the lock to be clear and skipping
+ * if it never is. A lock stranded by an earlier operation would otherwise fail
+ * every test that ran after it, reporting one leak as many and blaming whichever
+ * operation happened to run next; skipping keeps the attribution honest.
+ * test_pm_lock_not_held_at_rest is what reports the stranded lock itself.
+ *
+ * The wait matters as much as the skip: a release can be in flight from an
+ * interrupt that has not run yet, so sampling the state on entry without
+ * settling first reads a lock that is already on its way out.
+ */
+#define PM_LOCK_QUIESCE_OR_SKIP()                                                                  \
+	do {                                                                                       \
+		if (!pm_lock_settles_to(false)) {                                                  \
+			ztest_test_skip();                                                         \
+		}                                                                                  \
+	} while (0)
+
+static void pm_lock_test_reset(void)
+{
+	k_sem_reset(&tx_done);
+	k_sem_reset(&rx_rdy);
+	k_sem_reset(&rx_buf_released);
+	k_sem_reset(&rx_disabled);
+	memset(&tdata, 0, sizeof(tdata));
+}
+
+ZTEST(uart_async_pm, test_pm_lock_not_held_at_rest)
+{
+	pm_lock_test_reset();
+
+	zassert_true(pm_lock_settles_to(false),
+		     "a PM state lock is held with no transfer in flight");
+}
+
+ZTEST(uart_async_pm, test_pm_lock_released_after_tx)
+{
+	uint8_t tx_buf[] = "test";
+
+	pm_lock_test_reset();
+	PM_LOCK_QUIESCE_OR_SKIP();
+
+	zassert_ok(uart_tx(uart_dev, tx_buf, sizeof(tx_buf), 100 * USEC_PER_MSEC));
+	zassert_ok(k_sem_take(&tx_done, K_MSEC(500)), "TX_DONE timeout");
+
+	zassert_true(pm_lock_settles_to(false),
+		     "a completed transmission did not give back the PM state lock it took");
+}
+
+ZTEST(uart_async_pm, test_pm_lock_released_after_rx_disable)
+{
+	pm_lock_test_reset();
+	PM_LOCK_QUIESCE_OR_SKIP();
+
+	zassert_ok(uart_rx_enable(uart_dev, tdata.rx_first_buffer,
+				  sizeof(tdata.rx_first_buffer), 50 * USEC_PER_MSEC));
+	zassert_ok(uart_rx_disable(uart_dev));
+	zassert_ok(k_sem_take(&rx_disabled, K_MSEC(500)), "RX_DISABLED timeout");
+
+	/* Reception ended by the application rather than by an interrupt arm,
+	 * so no arm runs to release what enabling it took.
+	 */
+	zassert_true(pm_lock_settles_to(false),
+		     "tearing reception down did not give back the PM state lock it took");
+}
+
+ZTEST(uart_async_pm, test_pm_lock_released_after_rx_timeout)
+{
+	uint8_t tx_buf[] = "test";
+
+	pm_lock_test_reset();
+	PM_LOCK_QUIESCE_OR_SKIP();
+
+	zassert_ok(uart_rx_enable(uart_dev, tdata.rx_first_buffer,
+				  sizeof(tdata.rx_first_buffer), 10 * USEC_PER_MSEC));
+	zassert_ok(uart_tx(uart_dev, tx_buf, sizeof(tx_buf), 100 * USEC_PER_MSEC));
+	zassert_ok(k_sem_take(&tx_done, K_MSEC(500)), "TX_DONE timeout");
+	zassert_ok(k_sem_take(&rx_rdy, K_MSEC(500)), "RX_RDY timeout");
+
+	/* The receiver is still enabled but has gone idle. Whatever was taken to
+	 * cover the reception belongs back now, not when the receiver is finally
+	 * disabled.
+	 */
+	zassert_true(pm_lock_settles_to(false),
+		     "an idle receiver did not give back the PM state lock it took");
+
+	(void)uart_rx_disable(uart_dev);
+	(void)k_sem_take(&rx_disabled, K_MSEC(500));
 }
 
 ZTEST_SUITE(uart_async_pm, NULL, pm_light_sleep_setup, NULL, NULL, NULL);
