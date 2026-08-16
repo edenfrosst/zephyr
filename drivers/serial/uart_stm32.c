@@ -2533,6 +2533,23 @@ static int uart_stm32_pm_action(const struct device *dev, enum pm_device_action 
 		}
 		break;
 	case PM_DEVICE_ACTION_SUSPEND:
+#ifdef CONFIG_PM
+		/* Forbid suspending while a stream transmission holds its claim,
+		 * whichever API started it. Such a transmission ends at an
+		 * interrupt, interrupts do not run with the clock stopped, and
+		 * the resume path re-initialises the instance - so the transfer
+		 * would neither complete nor be reported, and its claim could
+		 * never be released.
+		 *
+		 * A polled character needs no such refusal:
+		 * uart_stm32_suspend_setup() below spins on TC with interrupts
+		 * enabled, so the interrupt that ends it still runs and hands the
+		 * claim back on the way out.
+		 */
+		if (atomic_test_bit(data->pm_lock, UART_STM32_PM_LOCK_TX_STREAM)) {
+			return -EBUSY;
+		}
+#endif /* CONFIG_PM */
 #ifdef CONFIG_UART_ASYNC_API
 		/* Forbid suspending while an asynchronous transfer is ongoing.
 		 * The interrupts that report the end of a transfer do not run
