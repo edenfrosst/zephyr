@@ -173,6 +173,22 @@ tests:
       - sam_e54_xpro
       - pic32cm_jh01_cpro
       - pic32cx_sg41_cult
+  # The uart_async_pm suite checks that the system can still reach a power state
+  # after a transfer has completed, which is where a driver that does not hand
+  # back a PM lock shows up. It ran only on Espressif parts; this covers the
+  # STM32 asynchronous path, where that class of leak has been found.
+  drivers.uart.async_api.pm:
+    filter: CONFIG_SERIAL_SUPPORT_ASYNC
+    harness: ztest
+    harness_config:
+      fixture: gpio_loopback
+    depends_on: gpio
+    platform_allow:
+      - nucleo_l476rg
+    extra_configs:
+      - CONFIG_PM=y
+      - CONFIG_PM_DEVICE=y
+      - CONFIG_PM_DEVICE_RUNTIME=y
   drivers.uart.async_api.esp.pm:
     filter: CONFIG_SERIAL_SUPPORT_ASYNC
     harness: ztest
