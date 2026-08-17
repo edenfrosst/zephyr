@@ -21,6 +21,32 @@
 
 #include <stm32_ll_usart.h>
 
+/*
+ * What an interrupt-driven receiver has to keep the system out of.
+ *
+ * Such a receiver is delivered a byte at a time and has no transfer for a wake
+ * claim to span, so between characters the system is free to enter a Stop
+ * state. Whether that loses data depends on the baud rate and on how long the
+ * wake takes, and the driver cannot work that out for itself: most SoC
+ * devicetrees give power states a min-residency but no exit-latency, the L4
+ * among them. So the board decides, through zephyr,disabling-power-states.
+ */
+enum uart_stm32_rx_irq_pm {
+	/* Property absent: the question has not been considered for this port,
+	 * so block every suspend-to-idle substate while the receiver is enabled.
+	 * Costs power on a port that did not need it, which is the right way
+	 * round - the alternative silently drops bytes.
+	 */
+	UART_STM32_RX_IRQ_PM_BLOCK_ALL,
+	/* Property present but empty: considered, and nothing needs blocking.
+	 * The receiver keeps waking per byte, which is measurably lossless at
+	 * 9600 and below on an L4.
+	 */
+	UART_STM32_RX_IRQ_PM_BLOCK_NONE,
+	/* Property lists states: block exactly those. */
+	UART_STM32_RX_IRQ_PM_BLOCK_DECLARED,
+};
+
 /* device config */
 struct uart_stm32_config {
 	/* USART instance */
@@ -43,6 +69,8 @@ struct uart_stm32_config {
 	bool tx_invert;
 	/* enable de signal */
 	bool de_enable;
+	/* what an interrupt-driven receiver must keep the system out of */
+	enum uart_stm32_rx_irq_pm rx_irq_pm;
 	/* de signal assertion time in 1/16 of a bit */
 	uint8_t de_assert_time;
 	/* de signal deassertion time in 1/16 of a bit */
@@ -98,8 +126,16 @@ enum uart_stm32_pm_lock {
 	UART_STM32_PM_LOCK_TX_POLL,
 	UART_STM32_PM_LOCK_TX_STREAM,
 	UART_STM32_PM_LOCK_RX,
+	/* Held while an interrupt-driven receiver is enabled. What it keeps hold
+	 * of depends on what the board declared - see uart_stm32_rx_irq_pm - but
+	 * the bit itself only records that something is held, so that repeated
+	 * uart_irq_rx_enable() calls, which are a no-op to the caller, take it
+	 * once.
+	 */
+	UART_STM32_PM_LOCK_RX_IRQ,
 	UART_STM32_PM_LOCK_COUNT,
 };
+
 
 /* driver data */
 struct uart_stm32_data {

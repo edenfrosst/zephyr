@@ -1104,9 +1104,62 @@ static int uart_stm32_irq_tx_complete(const struct device *dev)
 	return LL_USART_IsActiveFlag_TC(config->usart);
 }
 
+#ifdef CONFIG_PM
+/*
+ * Keep the system able to receive the next character while an interrupt-driven
+ * receiver is enabled. What that costs is the board's call - see
+ * enum uart_stm32_rx_irq_pm - and the bit makes a repeated enable harmless,
+ * since the claims underneath are reference counted.
+ */
+static void uart_stm32_irq_rx_pm_get(const struct device *dev)
+{
+	const struct uart_stm32_config *config = dev->config;
+	struct uart_stm32_data *data = dev->data;
+
+	if (config->rx_irq_pm == UART_STM32_RX_IRQ_PM_BLOCK_NONE) {
+		return;
+	}
+
+	if (atomic_test_and_set_bit(data->pm_lock, UART_STM32_PM_LOCK_RX_IRQ)) {
+		return;
+	}
+
+	if (config->rx_irq_pm == UART_STM32_RX_IRQ_PM_BLOCK_DECLARED) {
+		pm_policy_device_power_lock_get(dev);
+	} else {
+		pm_policy_state_lock_get(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+	}
+}
+
+static void uart_stm32_irq_rx_pm_put(const struct device *dev)
+{
+	const struct uart_stm32_config *config = dev->config;
+	struct uart_stm32_data *data = dev->data;
+
+	if (config->rx_irq_pm == UART_STM32_RX_IRQ_PM_BLOCK_NONE) {
+		return;
+	}
+
+	if (!atomic_test_and_clear_bit(data->pm_lock, UART_STM32_PM_LOCK_RX_IRQ)) {
+		return;
+	}
+
+	if (config->rx_irq_pm == UART_STM32_RX_IRQ_PM_BLOCK_DECLARED) {
+		pm_policy_device_power_lock_put(dev);
+	} else {
+		pm_policy_state_lock_put(PM_STATE_SUSPEND_TO_IDLE, PM_ALL_SUBSTATES);
+	}
+}
+#else
+#define uart_stm32_irq_rx_pm_get(dev)
+#define uart_stm32_irq_rx_pm_put(dev)
+#endif /* CONFIG_PM */
+
 static void uart_stm32_irq_rx_enable(const struct device *dev)
 {
 	const struct uart_stm32_config *config = dev->config;
+
+	uart_stm32_irq_rx_pm_get(dev);
 
 	ll_usart_irq_rx_enable(config->usart);
 }
@@ -1116,6 +1169,8 @@ static void uart_stm32_irq_rx_disable(const struct device *dev)
 	const struct uart_stm32_config *config = dev->config;
 
 	ll_usart_irq_rx_disable(config->usart);
+
+	uart_stm32_irq_rx_pm_put(dev);
 }
 
 static int uart_stm32_irq_rx_ready(const struct device *dev)
@@ -2856,6 +2911,13 @@ static int uart_stm32_pm_action(const struct device *dev, enum pm_device_action 
 		.rx_invert = DT_INST_PROP(index, rx_invert),			\
 		.tx_invert = DT_INST_PROP(index, tx_invert),			\
 		.de_enable = DT_INST_PROP(index, de_enable),			\
+		.rx_irq_pm = COND_CODE_1(					\
+			DT_INST_NODE_HAS_PROP(index, zephyr_disabling_power_states),	\
+			(COND_CODE_1(						\
+				DT_INST_PROP_HAS_IDX(index, zephyr_disabling_power_states, 0),\
+				(UART_STM32_RX_IRQ_PM_BLOCK_DECLARED),		\
+				(UART_STM32_RX_IRQ_PM_BLOCK_NONE))),		\
+			(UART_STM32_RX_IRQ_PM_BLOCK_ALL)),			\
 		.de_assert_time = DT_INST_PROP(index, de_assert_time),		\
 		.de_deassert_time = DT_INST_PROP(index, de_deassert_time),	\
 		.de_invert = DT_INST_PROP(index, de_invert),			\
